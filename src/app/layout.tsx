@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "CreoOS | Creator workspace",
-  description: "An operating system for creator businesses.",
+  description: "Creator-business operating system with role-aware workspace tools.",
 };
 
 export default function RootLayout({

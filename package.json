@@ -1,7 +1,9 @@
 {
   "name": "creo-os",
+  "description": "Creator-business operating system with role-aware workspace tools and InsForge-backed authentication.",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

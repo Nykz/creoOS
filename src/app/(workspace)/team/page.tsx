@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { Check, LoaderCircle, Mail, ShieldCheck, Trash2, UserRoundPlus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -169,7 +170,7 @@ export default function TeamPage() {
               {filteredMembers.length === 0 ? <TableRow><TableCell colSpan={5}><p className="table-empty">No members match this search.</p></TableCell></TableRow> : filteredMembers.map((member) => {
                 const canManage = state.kind === "ready" && state.canManageAccess && !member.isCurrentUser && member.role !== "owner";
                 return <TableRow key={member.id}>
-                  <TableCell><div className="member-identity"><div className="member-avatar">{member.avatarUrl ? <img src={member.avatarUrl} alt="" /> : initials(member.name)}</div><div><strong>{member.name}{member.isCurrentUser && <span className="current-label">You</span>}</strong><span>{member.email ?? "Email not available"}</span></div></div></TableCell>
+                  <TableCell><div className="member-identity"><div className="member-avatar">{member.avatarUrl ? <Image src={member.avatarUrl} alt="" width={32} height={32} unoptimized /> : initials(member.name)}</div><div><strong>{member.name}{member.isCurrentUser && <span className="current-label">You</span>}</strong><span>{member.email ?? "Email not available"}</span></div></div></TableCell>
                   <TableCell>{canManage ? <SelectPicker value={member.role} options={rolePickerOptions} disabled={busyId === member.id} aria-label={`Role for ${member.name}`} onChange={(role) => void updateMember(member.id, role)} /> : <Badge variant="outline">{member.role}</Badge>}</TableCell>
                   <TableCell><span className="member-profile-detail">{member.title ?? member.bio ?? "No profile details"}</span></TableCell>
                   <TableCell>{new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(member.created_at))}</TableCell>

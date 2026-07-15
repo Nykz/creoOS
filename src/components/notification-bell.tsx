@@ -2,7 +2,7 @@
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Bell, Check, LoaderCircle, CheckCheck, Sparkles } from "lucide-react";
+import { Bell, Check, LoaderCircle, CheckCheck, Sparkles, UsersRound } from "lucide-react";
 import { insforge } from "@/lib/insforge/browser";
 import { useWorkspaceAccess } from "@/features/workspace/workspace-access";
 
@@ -81,7 +81,7 @@ export function NotificationBell() {
     const handleAssignment = (payload: unknown) => {
       if (!active || !payload || typeof payload !== "object") return;
       const next = payload as Notification;
-      if (!next.id || next.type !== "task_assigned") return;
+      if (!next.id || !["task_assigned", "access_request_received"].includes(next.type)) return;
 
       setItems((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 12));
       ringBell();
@@ -92,6 +92,7 @@ export function NotificationBell() {
         await insforge.realtime.connect();
         await insforge.realtime.subscribe(`user:${userId}`);
         insforge.realtime.on("task_assigned", handleAssignment);
+        insforge.realtime.on("access_request_received", handleAssignment);
       } catch {
         // Durable notifications still work from the database.
       }
@@ -100,6 +101,7 @@ export function NotificationBell() {
     return () => {
       active = false;
       insforge.realtime.off("task_assigned", handleAssignment);
+      insforge.realtime.off("access_request_received", handleAssignment);
       void insforge.realtime.unsubscribe(`user:${userId}`);
     };
   }, [load, userId]);
@@ -225,7 +227,7 @@ export function NotificationBell() {
                   onClick={() => void markRead(item)}
                 >
                   <span className="notification-icon">
-                    <Bell size={13} />
+                  {item.type === "access_request_received" ? <UsersRound size={13} /> : <Bell size={13} />}
                   </span>
                   <span className="notification-copy">
                     <strong>{item.title}</strong>

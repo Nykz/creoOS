@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { resetWorkspaceAccessCache } from "@/features/workspace/workspace-access";
 
 declare global {
   interface Window {
@@ -13,6 +15,7 @@ declare global {
 }
 
 export function AuthForm({ mode, nextPath = "/" }: { mode: "sign-in" | "sign-up"; nextPath?: string }) {
+  const router = useRouter();
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
@@ -57,7 +60,8 @@ export function AuthForm({ mode, nextPath = "/" }: { mode: "sign-in" | "sign-up"
         return;
       }
 
-      window.location.assign(signup ? "/onboarding" : nextPath);
+      resetWorkspaceAccessCache();
+      router.replace(signup ? "/onboarding" : nextPath);
     } catch {
       setError("Network request failed. Please check the backend connection and try again.");
     } finally {

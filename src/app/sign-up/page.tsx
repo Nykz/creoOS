@@ -1,2 +1,8 @@
+import { redirect } from "next/navigation";
 import { AuthForm } from "@/components/auth-form";
-export default function SignUpPage() { return <AuthForm mode="sign-up" />; }
+import { getInitialWorkspaceUser } from "@/lib/insforge/current-user";
+
+export default async function SignUpPage() {
+  if (await getInitialWorkspaceUser()) redirect("/");
+  return <AuthForm mode="sign-up" />;
+}

@@ -4,7 +4,9 @@ import { createContext, createElement, useCallback, useContext, useEffect, useMe
 import { insforge } from "@/lib/insforge/browser";
 
 const STORAGE_KEY = "creoos.active-organization";
+const CACHE_TTL_MS = 30_000;
 let workspaceRefreshPromise: Promise<WorkspaceAccessState> | null = null;
+let cachedWorkspaceAccess: { state: WorkspaceAccessState; at: number } | null = null;
 
 export type WorkspaceUser = {
   id: string;
@@ -98,6 +100,34 @@ export function clearStoredOrganizationId() {
   setStoredOrganizationId(null);
 }
 
+function getCachedWorkspaceAccess() {
+  if (!cachedWorkspaceAccess) return null;
+  if (Date.now() - cachedWorkspaceAccess.at > CACHE_TTL_MS) {
+    cachedWorkspaceAccess = null;
+    return null;
+  }
+  return cachedWorkspaceAccess.state;
+}
+
+function isCacheUsableForUser(state: WorkspaceAccessState | null, initialUser: WorkspaceUser | null | undefined) {
+  if (!state) return false;
+  if (initialUser === undefined) return true;
+  if (!initialUser) return state.kind === "signed_out";
+  return Boolean(state.user && state.user.id === initialUser.id);
+}
+
+function setCachedWorkspaceAccess(state: WorkspaceAccessState) {
+  cachedWorkspaceAccess = { state, at: Date.now() };
+}
+
+function clearCachedWorkspaceAccess() {
+  cachedWorkspaceAccess = null;
+}
+
+export function resetWorkspaceAccessCache() {
+  clearCachedWorkspaceAccess();
+}
+
 function loadingState(): WorkspaceAccessState {
   return {
     kind: "loading",
@@ -122,6 +152,17 @@ function errorState(message: string, user: WorkspaceUser | null = null): Workspa
   };
 }
 
+function signedOutState(): WorkspaceAccessState {
+  return {
+    kind: "signed_out",
+    user: null,
+    organizations: [],
+    activeOrganization: null,
+    pendingRequest: null,
+    canManageAccess: false,
+  };
+}
+
 function normalizeName(name: string | null | undefined, email: string | null | undefined) {
   const trimmed = name?.trim();
   if (trimmed) return trimmed;
@@ -142,6 +183,10 @@ function formatInsforgeError(error: unknown, fallback: string) {
   return fallback;
 }
 
+function isMissingRefreshTokenError(error: unknown) {
+  return error instanceof Error && /no refresh token/i.test(error.message);
+}
+
 function toWorkspaceUser(user: { id: string; email?: string | null; profile?: { name?: string | null } | null }): WorkspaceUser {
   return {
     id: user.id,
@@ -152,7 +197,10 @@ function toWorkspaceUser(user: { id: string; email?: string | null; profile?: { 
 
 async function getCurrentWorkspaceUser() {
   const { data, error } = await insforge.auth.getCurrentUser();
-  if (error) throw error;
+  if (error) {
+    if (isMissingRefreshTokenError(error)) return null;
+    throw error;
+  }
   return data?.user ? toWorkspaceUser(data.user) : null;
 }
 
@@ -184,14 +232,7 @@ async function retry<T>(operation: () => Promise<T>, attempts = 3) {
 export async function loadWorkspaceAccess(initialUser?: WorkspaceUser | null): Promise<WorkspaceAccessState> {
   const user = initialUser === undefined ? await getCurrentWorkspaceUser() : initialUser;
   if (!user) {
-    return {
-      kind: "signed_out",
-      user: null,
-      organizations: [],
-      activeOrganization: null,
-      pendingRequest: null,
-      canManageAccess: false,
-    };
+    return signedOutState();
   }
 
   const membershipResult = await retry(async () => {
@@ -292,30 +333,43 @@ export async function loadWorkspaceAccess(initialUser?: WorkspaceUser | null): P
 type WorkspaceAccessContextValue = {
   state: WorkspaceAccessState;
   loading: boolean;
-  refresh: () => Promise<WorkspaceAccessState>;
+  refresh: (options?: { force?: boolean }) => Promise<WorkspaceAccessState>;
   setActiveOrganizationId: typeof setStoredOrganizationId;
   clearActiveOrganizationId: typeof clearStoredOrganizationId;
 };
 
 const WorkspaceAccessContext = createContext<WorkspaceAccessContextValue | null>(null);
 
-export function WorkspaceAccessProvider({ children, initialUser = null }: { children: ReactNode; initialUser?: WorkspaceUser | null }) {
-  const [state, setState] = useState<WorkspaceAccessState>(() => loadingState());
+export function WorkspaceAccessProvider({ children, initialUser }: { children: ReactNode; initialUser?: WorkspaceUser | null }) {
+  const [state, setState] = useState<WorkspaceAccessState>(() => {
+    const cachedState = getCachedWorkspaceAccess();
+    if (cachedState && isCacheUsableForUser(cachedState, initialUser)) return cachedState;
+    return loadingState();
+  });
   const [sessionUser, setSessionUser] = useState<WorkspaceUser | null | undefined>(initialUser);
   const bootstrappedRef = useRef(false);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { force?: boolean }) => {
+    const cachedState = options?.force ? null : getCachedWorkspaceAccess();
+    if (cachedState && isCacheUsableForUser(cachedState, sessionUser)) {
+      setState(cachedState);
+      return cachedState;
+    }
     if (workspaceRefreshPromise) return workspaceRefreshPromise;
     setState((current) => (current.kind === "loading" ? current : loadingState()));
     workspaceRefreshPromise = (async () => {
       try {
         const nextState = await withTimeout(retry(() => loadWorkspaceAccess(sessionUser)), "Workspace restore timed out. Please try again.", 30000);
         setState(nextState);
+        setCachedWorkspaceAccess(nextState);
         if (nextState.kind === "signed_out") setSessionUser(null);
         else if (nextState.user) setSessionUser(nextState.user);
         return nextState;
       } catch (cause) {
-        const nextState = errorState(cause instanceof Error ? cause.message : "Unable to load workspace access.");
+        const nextState = isMissingRefreshTokenError(cause)
+          ? signedOutState()
+          : errorState(cause instanceof Error ? cause.message : "Unable to load workspace access.");
         setState(nextState);
+        setCachedWorkspaceAccess(nextState);
         return nextState;
       } finally {
         workspaceRefreshPromise = null;
@@ -337,8 +391,14 @@ export function WorkspaceAccessProvider({ children, initialUser = null }: { chil
       state,
       loading: state.kind === "loading",
       refresh,
-      setActiveOrganizationId: setStoredOrganizationId,
-      clearActiveOrganizationId: clearStoredOrganizationId,
+      setActiveOrganizationId: (organizationId: string | null) => {
+        clearCachedWorkspaceAccess();
+        setStoredOrganizationId(organizationId);
+      },
+      clearActiveOrganizationId: () => {
+        clearCachedWorkspaceAccess();
+        clearStoredOrganizationId();
+      },
     }),
     [refresh, state],
   );
@@ -369,21 +429,20 @@ export async function createWorkspace(input: { name: string; slug: string; seed?
   return data as string;
 }
 
-export async function requestCompanyAccess(input: { slug: string; requestedRole?: string }) {
-  const user = await getCurrentWorkspaceUser();
-  if (!user) {
-    throw new Error("Please sign in first.");
-  }
+export async function requestCompanyAccess(input: { slug: string; requestedRole?: string; user?: WorkspaceUser | null }) {
+  const slug = input.slug.trim().toLowerCase();
+  if (!slug) throw new Error("Enter a company code.");
 
   const requestedRole = input.requestedRole === "editor" ? "editor" : "viewer";
-  const { data, error } = await insforge.database.rpc("request_organization_access", {
-    p_slug: input.slug.trim().toLowerCase(),
-    p_email: user.email ?? "",
-    p_display_name: user.name,
-    p_requested_role: requestedRole,
+  const response = await fetch("/api/auth/workspace-access-request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ slug, requestedRole }),
   });
-  if (error) throw error;
-  return data as string;
+  const body = (await response.json().catch(() => null)) as { requestId?: string; message?: string } | null;
+  if (!response.ok) throw new Error(body?.message || "Could not request access.");
+  return body?.requestId ?? "";
 }
 
 export async function approveWorkspaceAccessRequest(requestId: string, role?: string) {
@@ -406,6 +465,7 @@ export async function rejectWorkspaceAccessRequest(requestId: string, notes?: st
 
 export async function signOutWorkspace() {
   const response = await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin" });
+  clearCachedWorkspaceAccess();
   clearStoredOrganizationId();
   if (!response.ok) throw new Error("Unable to sign out.");
 }

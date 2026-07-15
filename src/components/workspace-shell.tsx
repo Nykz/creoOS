@@ -104,7 +104,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
                 className={`nav-item switch-item ${organization.id === state.activeOrganization.id ? "active" : ""}`}
                 onClick={() => {
                   setActiveOrganizationId(organization.id);
-                  void refresh().then(() => router.refresh());
+                  void refresh({ force: true }).then(() => router.refresh());
                 }}
               >
                 <div className="switch-text">

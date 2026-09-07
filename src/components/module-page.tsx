@@ -18,6 +18,7 @@ import {
 import { useWorkspaceAccess } from "@/features/workspace/workspace-access";
 import { canManageRecords as roleCanManageRecords } from "@/features/workspace/permissions";
 import { canManageAccess as roleCanManageAccess } from "@/features/workspace/permissions";
+import { getBrowserAccessToken } from "@/lib/insforge/browser";
 
 type ResourceRow = Record<string, unknown> & {
   id: string;
@@ -81,9 +82,13 @@ async function mutateResource(
   method: "POST" | "PATCH" | "DELETE",
   body: Record<string, unknown>,
 ) {
+  const accessToken = getBrowserAccessToken();
   const response = await fetch(`/api/resources/${resource}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
     credentials: "same-origin",
     body: JSON.stringify(body),
   });
@@ -96,8 +101,12 @@ async function mutateResource(
 
 async function fetchResource(resource: ResourceKey, organizationId: string) {
   const searchParams = new URLSearchParams({ organizationId });
+  const accessToken = getBrowserAccessToken();
   const response = await fetch(`/api/resources/${resource}?${searchParams.toString()}`, {
-    headers: { Accept: "application/json" },
+    headers: {
+      Accept: "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
     credentials: "same-origin",
   });
   const result = (await response.json().catch(() => null)) as {

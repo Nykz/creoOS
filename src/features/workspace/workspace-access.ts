@@ -1,10 +1,11 @@
 "use client";
 
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { insforge } from "@/lib/insforge/browser";
+import { getBrowserAccessToken, insforge } from "@/lib/insforge/browser";
 
 const STORAGE_KEY = "creoos.active-organization";
-const CACHE_TTL_MS = 30_000;
+const SESSION_STORAGE_KEY = "creoos.workspace-session";
+const CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours persistent cache
 let workspaceRefreshPromise: Promise<WorkspaceAccessState> | null = null;
 let cachedWorkspaceAccess: { state: WorkspaceAccessState; at: number } | null = null;
 
@@ -100,13 +101,31 @@ export function clearStoredOrganizationId() {
   setStoredOrganizationId(null);
 }
 
-function getCachedWorkspaceAccess() {
-  if (!cachedWorkspaceAccess) return null;
-  if (Date.now() - cachedWorkspaceAccess.at > CACHE_TTL_MS) {
+export function getCachedWorkspaceAccess(): WorkspaceAccessState | null {
+  if (cachedWorkspaceAccess) {
+    if (Date.now() - cachedWorkspaceAccess.at <= CACHE_TTL_MS) {
+      return cachedWorkspaceAccess.state;
+    }
     cachedWorkspaceAccess = null;
+  }
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { state: WorkspaceAccessState; at: number };
+    if (!parsed || !parsed.state || typeof parsed.at !== "number") return null;
+    if (Date.now() - parsed.at > CACHE_TTL_MS) {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+    if (parsed.state.kind === "ready" || parsed.state.kind === "pending") {
+      cachedWorkspaceAccess = parsed;
+      return parsed.state;
+    }
+    return null;
+  } catch {
     return null;
   }
-  return cachedWorkspaceAccess.state;
 }
 
 function isCacheUsableForUser(state: WorkspaceAccessState | null, initialUser: WorkspaceUser | null | undefined) {
@@ -116,12 +135,28 @@ function isCacheUsableForUser(state: WorkspaceAccessState | null, initialUser: W
   return Boolean(state.user && state.user.id === initialUser.id);
 }
 
-function setCachedWorkspaceAccess(state: WorkspaceAccessState) {
+export function setCachedWorkspaceAccess(state: WorkspaceAccessState) {
   cachedWorkspaceAccess = { state, at: Date.now() };
+  if (typeof window === "undefined") return;
+  try {
+    if (state.kind === "ready" || state.kind === "pending") {
+      window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ state, at: Date.now() }));
+    } else if (state.kind === "signed_out") {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage quota or disabled errors
+  }
 }
 
-function clearCachedWorkspaceAccess() {
+export function clearCachedWorkspaceAccess() {
   cachedWorkspaceAccess = null;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore
+  }
 }
 
 export function resetWorkspaceAccessCache() {
@@ -204,7 +239,7 @@ async function getCurrentWorkspaceUser() {
   return data?.user ? toWorkspaceUser(data.user) : null;
 }
 
-async function withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 12000) {
+async function withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 8000) {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timer = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
@@ -216,14 +251,14 @@ async function withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 
   }
 }
 
-async function retry<T>(operation: () => Promise<T>, attempts = 3) {
+async function retry<T>(operation: () => Promise<T>, attempts = 1) {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
       lastError = error;
-      if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
     }
   }
   throw lastError;
@@ -355,21 +390,40 @@ export function WorkspaceAccessProvider({ children, initialUser }: { children: R
       return cachedState;
     }
     if (workspaceRefreshPromise) return workspaceRefreshPromise;
-    setState((current) => (current.kind === "loading" ? current : loadingState()));
+    setState((current) => (current.kind === "ready" || current.kind === "pending" ? current : loadingState()));
     workspaceRefreshPromise = (async () => {
       try {
-        const nextState = await withTimeout(retry(() => loadWorkspaceAccess(sessionUser)), "Workspace restore timed out. Please try again.", 30000);
+        const nextState = await withTimeout(
+          retry(() => loadWorkspaceAccess(undefined)),
+          "Workspace restore timed out. Please try again.",
+          8000,
+        );
         setState(nextState);
         setCachedWorkspaceAccess(nextState);
-        if (nextState.kind === "signed_out") setSessionUser(null);
-        else if (nextState.user) setSessionUser(nextState.user);
+        if (nextState.kind === "signed_out") {
+          setSessionUser(null);
+          clearCachedWorkspaceAccess();
+          clearStoredOrganizationId();
+        } else if (nextState.user) {
+          setSessionUser(nextState.user);
+        }
         return nextState;
       } catch (cause) {
-        const nextState = isMissingRefreshTokenError(cause)
-          ? signedOutState()
-          : errorState(cause instanceof Error ? cause.message : "Unable to load workspace access.");
+        if (isMissingRefreshTokenError(cause)) {
+          const nextState = signedOutState();
+          setState(nextState);
+          setCachedWorkspaceAccess(nextState);
+          clearStoredOrganizationId();
+          return nextState;
+        }
+        // Fallback to cached state on transient network failure
+        const fallback = getCachedWorkspaceAccess();
+        if (fallback && (fallback.kind === "ready" || fallback.kind === "pending")) {
+          setState(fallback);
+          return fallback;
+        }
+        const nextState = errorState(cause instanceof Error ? cause.message : "Unable to load workspace access.");
         setState(nextState);
-        setCachedWorkspaceAccess(nextState);
         return nextState;
       } finally {
         workspaceRefreshPromise = null;
@@ -434,10 +488,14 @@ export async function requestCompanyAccess(input: { slug: string; requestedRole?
   if (!slug) throw new Error("Enter a company code.");
 
   const requestedRole = input.requestedRole === "editor" ? "editor" : "viewer";
+  const accessToken = getBrowserAccessToken();
   const response = await fetch("/api/auth/workspace-access-request", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
     body: JSON.stringify({ slug, requestedRole }),
   });
   const body = (await response.json().catch(() => null)) as { requestId?: string; message?: string } | null;
@@ -464,8 +522,12 @@ export async function rejectWorkspaceAccessRequest(requestId: string, notes?: st
 }
 
 export async function signOutWorkspace() {
-  const response = await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin" });
   clearCachedWorkspaceAccess();
   clearStoredOrganizationId();
-  if (!response.ok) throw new Error("Unable to sign out.");
+  try {
+    await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin" });
+  } catch {
+    // Ignore network error on sign-out endpoint
+  }
+  await insforge.auth.signOut().catch(() => undefined);
 }

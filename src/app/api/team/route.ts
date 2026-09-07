@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@insforge/sdk/ssr";
+import { createClient } from "@insforge/sdk";
 import { getInsforgeAdmin } from "@/lib/insforge/server";
 import { env as serverEnv } from "@/lib/env";
 import { canAssignRole, canManageAccess, isWorkspaceRole } from "@/features/workspace/permissions";
@@ -14,13 +14,17 @@ function env(name: "NEXT_PUBLIC_INSFORGE_URL" | "NEXT_PUBLIC_INSFORGE_ANON_KEY")
 }
 
 async function getCurrentUser(request: NextRequest) {
-  const client = createServerClient({
+  const bearerToken = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  const cookieToken = request.cookies.get("insforge_access_token")?.value;
+  const accessToken = bearerToken || cookieToken || null;
+  if (!accessToken) return null;
+  const client = createClient({
     baseUrl: env("NEXT_PUBLIC_INSFORGE_URL"),
     anonKey: env("NEXT_PUBLIC_INSFORGE_ANON_KEY"),
-    cookies: request.cookies,
+    accessToken,
   });
   const { data, error } = await client.auth.getCurrentUser();
-  if (error || !data.user) return null;
+  if (error || !data?.user) return null;
   return data.user as { id: string; email?: string | null; profile?: Record<string, unknown> | null };
 }
 

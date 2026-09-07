@@ -6,7 +6,13 @@ import { FormEvent, useEffect, useState } from "react";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { resetWorkspaceAccessCache } from "@/features/workspace/workspace-access";
+import { insforge } from "@/lib/insforge/browser";
+import {
+  getCachedWorkspaceAccess,
+  loadWorkspaceAccess,
+  resetWorkspaceAccessCache,
+  setCachedWorkspaceAccess,
+} from "@/features/workspace/workspace-access";
 
 declare global {
   interface Window {
@@ -28,6 +34,24 @@ export function AuthForm({ mode, nextPath = "/" }: { mode: "sign-in" | "sign-up"
     };
   }, []);
 
+  useEffect(() => {
+    void (async () => {
+      const cached = getCachedWorkspaceAccess();
+      if (cached && (cached.kind === "ready" || cached.kind === "pending") && cached.user) {
+        if (cached.kind === "ready" && cached.organizations.length === 0 && !cached.pendingRequest) {
+          router.replace("/onboarding");
+        } else {
+          router.replace(signup ? "/onboarding" : nextPath);
+        }
+        return;
+      }
+      const { data } = await insforge.auth.getCurrentUser();
+      if (data?.user) {
+        router.replace(signup ? "/onboarding" : nextPath);
+      }
+    })();
+  }, [nextPath, router, signup]);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -42,25 +66,47 @@ export function AuthForm({ mode, nextPath = "/" }: { mode: "sign-in" | "sign-up"
     };
 
     try {
-      const response = await fetch(signup ? "/api/auth/sign-up" : "/api/auth/sign-in", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        credentials: "same-origin",
-      });
-      const body = await response.json().catch(() => ({}));
+      const { data, error } = signup
+        ? await insforge.auth.signUp({
+            email: payload.email,
+            password: payload.password,
+            name: payload.name,
+            redirectTo: `${window.location.origin}/sign-in`,
+          })
+        : await insforge.auth.signInWithPassword({
+            email: payload.email,
+            password: payload.password,
+          });
 
-      if (!response.ok) {
-        setError(typeof body.message === "string" ? body.message : "Authentication failed.");
+      if (error || !data?.user) {
+        setError(error?.message ?? "Authentication failed.");
         return;
       }
 
-      if (signup && body.requireEmailVerification) {
+      if (signup && data.requireEmailVerification) {
         setSuccess("Account created. Check your email to verify your account before creating a workspace.");
         return;
       }
 
       resetWorkspaceAccessCache();
+      if (!signup && data.user) {
+        try {
+          const preloadedState = await loadWorkspaceAccess({
+            id: data.user.id,
+            email: data.user.email ?? null,
+            name: data.user.profile?.name?.trim() || data.user.email?.split("@")[0] || "Creator",
+          });
+          if (preloadedState) {
+            setCachedWorkspaceAccess(preloadedState);
+            if (preloadedState.kind === "ready" && preloadedState.organizations.length === 0 && !preloadedState.pendingRequest) {
+              router.replace("/onboarding");
+              return;
+            }
+          }
+        } catch {
+          // If preloading encounters any issue, router.replace will let WorkspaceAccessProvider handle it
+        }
+      }
       router.replace(signup ? "/onboarding" : nextPath);
     } catch {
       setError("Network request failed. Please check the backend connection and try again.");
@@ -84,7 +130,7 @@ export function AuthForm({ mode, nextPath = "/" }: { mode: "sign-in" | "sign-up"
         <span className="eyebrow">Creator business operating system</span>
         <h1>{signup ? "Build your company workspace" : "Welcome back"}</h1>
         <p>{signup ? "Start with your company, then invite your team with the roles they need." : "Sign in to your company workspace."}</p>
-        <form method="post" action={signup ? "/api/auth/sign-up" : "/api/auth/sign-in"} onSubmit={submit}>
+        <form onSubmit={submit}>
           {signup && (
             <label>
               Name

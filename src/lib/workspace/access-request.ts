@@ -1,7 +1,7 @@
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@insforge/sdk/ssr";
+import { createClient } from "@insforge/sdk";
 import { getInsforgeAdmin } from "@/lib/insforge/server";
 import { isSameOrigin, jsonSecurityError } from "@/lib/security/request";
 
@@ -29,6 +29,12 @@ function normalizeName(name: string | null | undefined, email: string | null | u
   if (trimmed) return trimmed;
   if (email) return email.split("@")[0] || email;
   return "Creator";
+}
+
+function getBearerToken(request: NextRequest) {
+  const value = request.headers.get("authorization") ?? "";
+  const match = value.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || null;
 }
 
 async function getOrganizationBySlug(slug: string) {
@@ -97,10 +103,15 @@ export async function handleWorkspaceAccessRequest(request: NextRequest) {
     if (!organization) return NextResponse.json({ message: "Unknown company code." }, { status: 404 });
 
     const requestedRole = body?.requestedRole === "editor" ? "editor" : "viewer";
-    const client = createServerClient({
+    const accessToken = getBearerToken(request) || request.cookies.get("insforge_access_token")?.value || null;
+    if (!accessToken) {
+      return NextResponse.json({ message: "Sign in again before requesting access." }, { status: 401 });
+    }
+
+    const client = createClient({
       baseUrl: env("NEXT_PUBLIC_INSFORGE_URL"),
       anonKey: env("NEXT_PUBLIC_INSFORGE_ANON_KEY"),
-      cookies: request.cookies,
+      accessToken,
     });
 
     const { data: current, error: userError } = await client.auth.getCurrentUser();

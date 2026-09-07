@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { CircleAlert, LoaderCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useWorkspaceAccess } from "@/features/workspace/workspace-access";
+import { signOutWorkspace, useWorkspaceAccess } from "@/features/workspace/workspace-access";
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -12,14 +12,15 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const { state, loading, refresh } = useWorkspaceAccess();
   const [slowRestore, setSlowRestore] = useState(false);
   const showRecovery = loading && slowRestore;
-  const sessionNeedsSignIn = state.kind === "error" && /no refresh token/i.test(state.error);
+  const needsOnboarding = state.kind === "ready" && state.organizations.length === 0;
+  const sessionNeedsSignIn = state.kind === "error" && (/no refresh token/i.test(state.error) || /jwt/i.test(state.error) || /unauthorized/i.test(state.error) || /auth/i.test(state.error));
 
   async function recoverSession() {
     if (!sessionNeedsSignIn) {
-      await refresh();
+      await refresh({ force: true });
       return;
     }
-    await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin" }).catch(() => undefined);
+    await signOutWorkspace().catch(() => undefined);
     router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`);
   }
 
@@ -30,10 +31,39 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }, [pathname, router, state.kind]);
 
   useEffect(() => {
+    if (needsOnboarding) {
+      router.replace("/onboarding");
+    }
+  }, [needsOnboarding, router]);
+
+  useEffect(() => {
     if (!loading) return;
     const timeout = window.setTimeout(() => setSlowRestore(true), 8000);
     return () => window.clearTimeout(timeout);
   }, [loading]);
+
+  if (state.kind === "ready" || state.kind === "pending") {
+    if (needsOnboarding) {
+      return (
+        <main className="auth-loading">
+          <section className="restore-card" aria-live="polite">
+            <div className="restore-mark">
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="restore-loader">
+              <LoaderCircle className="spin" size={24} />
+            </div>
+            <strong>Preparing workspace setup</strong>
+            <p>No verified company is linked to this account yet. Taking you to onboarding.</p>
+          </section>
+        </main>
+      );
+    }
+    return <>{children}</>;
+  }
 
   if (loading || state.kind === "signed_out") {
     return (
@@ -55,7 +85,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               : "Syncing your session, company access, and live workspace."}
           </p>
           {showRecovery && (
-            <Button className="primary-button" onClick={() => void refresh()}>
+            <Button className="primary-button" onClick={() => void refresh({ force: true })}>
               <RefreshCw size={16} /> Retry workspace check
             </Button>
           )}

@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   createWorkspace,
   requestCompanyAccess,
+  setStoredOrganizationId,
   useWorkspaceAccess,
   WorkspaceAccessProvider,
   type WorkspaceUser,
@@ -26,7 +27,7 @@ function slugify(value: string) {
 
 const onboardingSignInHref = "/sign-in?next=%2Fonboarding";
 
-export function OnboardingClient({ initialUser }: { initialUser: WorkspaceUser | null }) {
+export function OnboardingClient({ initialUser }: { initialUser?: WorkspaceUser | null }) {
   return (
     <WorkspaceAccessProvider initialUser={initialUser}>
       <OnboardingContent />
@@ -66,9 +67,12 @@ function OnboardingContent() {
       const form = new FormData(event.currentTarget);
       const name = String(form.get("name") || "").trim();
       const companySlug = String(form.get("slug") || slugify(name)).trim();
-      await createWorkspace({ name, slug: companySlug, seed: form.get("seed") === "on" });
+      const createdOrgId = await createWorkspace({ name, slug: companySlug, seed: form.get("seed") === "on" });
+      if (createdOrgId) {
+        setStoredOrganizationId(createdOrgId);
+      }
       setNotice(`Workspace ${name} is ready.`);
-      void refresh({ force: true });
+      await refresh({ force: true });
       router.replace("/");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not create the workspace.");
@@ -92,7 +96,7 @@ function OnboardingContent() {
         user: state.user,
       });
       setNotice("Your access request is pending admin approval.");
-      void refresh({ force: true });
+      await refresh({ force: true });
       router.replace("/");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not request access.");
@@ -101,7 +105,7 @@ function OnboardingContent() {
     }
   }
 
-  if (loading) {
+  if (loading && state.kind === "loading") {
     return (
       <main className="auth-page">
         <section className="auth-panel">

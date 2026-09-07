@@ -10,6 +10,7 @@ import { SelectPicker } from "@/components/ui/select-picker";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { approveWorkspaceAccessRequest, rejectWorkspaceAccessRequest, useWorkspaceAccess } from "@/features/workspace/workspace-access";
 import { rolePermissions } from "@/features/workspace/permissions";
+import { getBrowserAccessToken } from "@/lib/insforge/browser";
 
 type Member = {
   id: string;
@@ -75,7 +76,14 @@ export default function TeamPage() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/team?organizationId=${encodeURIComponent(organizationId)}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+      const accessToken = getBrowserAccessToken();
+      const response = await fetch(`/api/team?organizationId=${encodeURIComponent(organizationId)}`, {
+        headers: {
+          Accept: "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        cache: "no-store",
+      });
       const body = (await response.json().catch(() => null)) as { members?: Member[]; requests?: RequestRow[]; message?: string } | null;
       if (!response.ok) throw new Error(body?.message || "Could not load team records.");
       if (version !== loadVersion.current) return;
@@ -107,7 +115,17 @@ export default function TeamPage() {
     pendingRoleOverrides.current = { ...pendingRoleOverrides.current, [memberId]: role };
     setMembers((current) => current.map((member) => member.id === memberId ? { ...member, role } : member));
     try {
-      const response = await fetch("/api/team", { method: "PATCH", headers: { "Content-Type": "application/json", Accept: "application/json" }, cache: "no-store", body: JSON.stringify({ organizationId: activeOrganizationId, memberId, role }) });
+      const accessToken = getBrowserAccessToken();
+      const response = await fetch("/api/team", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        cache: "no-store",
+        body: JSON.stringify({ organizationId: activeOrganizationId, memberId, role }),
+      });
       const body = (await response.json().catch(() => null)) as { message?: string } | null;
       if (!response.ok) throw new Error(body?.message || "Could not update team role.");
       setMembers((current) => current.map((member) => member.id === memberId ? { ...member, role } : member));
@@ -124,7 +142,15 @@ export default function TeamPage() {
     if (!window.confirm("Remove this member from the workspace?")) return;
     setBusyId(memberId);
     try {
-      const response = await fetch("/api/team", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: activeOrganizationId, memberId }) });
+      const accessToken = getBrowserAccessToken();
+      const response = await fetch("/api/team", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ organizationId: activeOrganizationId, memberId }),
+      });
       const body = (await response.json().catch(() => null)) as { message?: string } | null;
       if (!response.ok) throw new Error(body?.message || "Could not remove team member.");
       delete pendingRoleOverrides.current[memberId];
